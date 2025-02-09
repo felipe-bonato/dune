@@ -4,7 +4,7 @@ mod vterm;
 
 use std::{
     cmp::min,
-    env, fs, io, path, process,
+    env, fs, io, path, process, str,
     sync::{Arc, Mutex},
     time,
 };
@@ -34,6 +34,7 @@ enum StateMsg {
     Error(String),
 }
 
+// TODO: Maybe store some info inside the mode?
 #[derive(PartialEq, Eq)]
 enum Mode {
     Explorer,
@@ -444,12 +445,38 @@ impl Dune {
                             let mut prompt_split = self.prompt.split(' ');
                             if let Some(cmd) = prompt_split.next() {
                                 let args = prompt_split.collect::<Vec<&str>>();
-                                let mut exec = std::process::Command::new(cmd);
+                                let mut exec = process::Command::new(cmd);
                                 let exec = exec
                                     .args(args)
                                     .arg(self.entries[self.selected_entry].path_str());
-                                // exec.spawn()?; // Let's not spawn until we have better input handling
-                                self.state = StateMsg::Info(format!("Execute: {exec:?}"));
+                                // TODO: How are we dealing with user interaction?
+                                // TODO: Don't quit on error (if command doesn't exist it will error).
+                                let output = exec.output()?;
+                                // TODO: Extract signal from ext code.
+                                let exit_code = output.status.code().unwrap_or(0);
+                                let pretty_command = format!(
+                                    "{program} {args}",
+                                    program = exec
+                                        .get_program()
+                                        .to_str()
+                                        .unwrap_or("<INVALID-UTF8-PROGRAM>"),
+                                    args = exec
+                                        .get_args()
+                                        .map(|arg| arg.to_str().unwrap_or("<INVALID-UTF8-ARG>"))
+                                        .collect::<Vec<_>>()
+                                        .join(" ")
+                                );
+                                if output.status.success() {
+                                    let stdout = str::from_utf8(&output.stdout).map_err(|e| {
+                                        io::Error::new(io::ErrorKind::InvalidData, e)
+                                    })?;
+                                    self.state = StateMsg::Info(format!("{pretty_command}: exit {exit_code}: {stdout}"));
+                                } else {
+                                    let stderr = str::from_utf8(&output.stderr).map_err(|e| {
+                                        io::Error::new(io::ErrorKind::InvalidData, e)
+                                    })?;
+                                    self.state = StateMsg::Error(format!("{pretty_command}: exit {exit_code}: {stderr}"));
+                                }
                                 self.update_entries()?;
                             }
                         }
