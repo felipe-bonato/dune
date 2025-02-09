@@ -1,3 +1,4 @@
+mod file_info;
 mod key_bindings;
 mod vterm;
 
@@ -5,8 +6,7 @@ use std::{
     cmp::min,
     env, fs,
     io::{self, stdout},
-    os::unix::fs::PermissionsExt,
-    path::Path,
+    path::{self, Path},
     process::ExitCode,
     sync::{Arc, Mutex},
     time::{self, Duration},
@@ -19,22 +19,11 @@ use crossterm::{
     style::{self, ContentStyle, Stylize},
 };
 
-use key_bindings::{Action, ActionCommand, ActionExplorer, ActionGlobal, KeyBindings};
+use key_bindings::{ActionCommand, ActionExplorer, ActionGlobal, KeyBindings};
 use vterm::{Panel, VTerm};
-
-static INVALID_FILE: &str = "<INVALID>";
 
 const TARGET_FPS: u64 = 120;
 const TARGET_FRAME_TIME_MS: u64 = 1000 / TARGET_FPS;
-
-struct FileInfo {
-    name: String,
-    path_abs: std::path::PathBuf,
-    is_dir: bool,
-    permissions: fs::Permissions,
-    last_modified: time::SystemTime,
-    size_kib: u64,
-}
 
 enum StateMsg {
     Ok,
@@ -52,9 +41,9 @@ struct Dune {
     pub vterm: Arc<Mutex<VTerm>>,
     should_quit: bool,
     updated_entries: bool,
-    entries: Vec<FileInfo>,
+    entries: Vec<file_info::FileInfo>,
+    curr_dir: file_info::FileInfo,
     view_window: (u16, u16), // Start and end of entries being presented on screen
-    curr_dir: FileInfo,
     delta_time: time::Duration,
     selected_line: u16,
     selected_entry: usize,
@@ -74,20 +63,13 @@ struct Dune {
 }
 
 impl Dune {
-    fn new(vterm: Arc<Mutex<VTerm>>, key_bindings: KeyBindings) -> Self {
+    fn new(vterm: Arc<Mutex<VTerm>>, key_bindings: KeyBindings, starting_path: path::PathBuf) -> Self {
         Self {
             vterm: vterm.clone(),
             should_quit: false,
             updated_entries: false,
             entries: Vec::new(),
-            curr_dir: FileInfo {
-                name: ".".to_owned(),
-                path_abs: std::env::current_dir().expect("could not open current directory"),
-                is_dir: true,
-                permissions: fs::Permissions::from_mode(0o0), // TODO: Actually get permissions
-                last_modified: time::SystemTime::now(),       // TODO: Acutally get data
-                size_kib: 0,                                  //TODO: add real size
-            },
+            curr_dir: starting_path.try_into().expect("could not open current directory"),
             view_window: (0, 0),
             delta_time: time::Duration::ZERO,
             state: StateMsg::Ok,
@@ -116,8 +98,9 @@ impl Dune {
 
         loop {
             let start = time::Instant::now();
+            
             if self.should_quit {
-                return Ok(self.curr_dir.path_abs.as_path());
+                return Ok(self.curr_dir.path());
             }
 
             self.poll_events()?;
@@ -170,17 +153,16 @@ impl Dune {
             if self.delta_time == Duration::ZERO {
                 self.delta_time = Duration::from_millis(16);
             }
-            let fps = Duration::from_secs(1).as_micros() / self.delta_time.as_micros();
             let mode = match self.mode {
-                Mode::Command => format!("Command Mode ({fps}FPS)"),
-                Mode::Explorer => format!("Explorer Mode ({fps}FPS)"),
+                Mode::Command =>  "Command Mode",
+                Mode::Explorer => "Explorer Mode",
             };
-            let text = self.curr_dir.path_abs.to_str().unwrap_or(INVALID_FILE);
+            let text = format!("{path}: (total {total})", path = self.curr_dir.path_str(), total = self.entries.len());
             self.panel_header
-                .draw_text(text, 0, 0, style.bold().black());
+                .draw_text(&text, 0, 0, style.bold().black());
             let w = self.vterm.lock().unwrap().width;
             self.panel_header
-                .draw_text(&mode, w - 1 - mode.len() as u16, 0, style.bold().black());
+                .draw_text(mode, w - 1 - mode.len() as u16, 0, style.bold().black());
 
             // Draw entries
             let start_window = self.view_window.0 as usize; // TODO: not scroll if everything can fit on the screen.
@@ -213,32 +195,30 @@ impl Dune {
                     ContentStyle::new().bold()
                 };
 
-                let mode = entry.permissions.mode();
+                let mode = entry.mode();
 
-                let style = if entry.is_dir {
+                let style = if entry.is_dir() {
                     style.cyan()
                 } else if mode & 0o001 == 1 {
                     // Is executable
                     style.green()
-                } else if entry.permissions.readonly() {
+                } else if entry.is_read_only() {
                     style.grey()
                 } else {
                     style
                 };
 
-                let style = if entry.name.starts_with('.') {
+                let style = if entry.name().starts_with('.') { // Unix hidden
                     style.dim()
                 } else {
                     style
                 };
 
-                // Green if executable
                 let mut name = if self.mode == Mode::Command && i == self.selected_line {
-                    format!(">>> {e} ", e = entry.name)
-                } else if i == self.entries.len() as u16 - 1 {
-                    format!(" {e} ", e = entry.name)
+                    // Highlight selected line
+                    format!(">>> {e} ", e = entry.name())
                 } else {
-                    format!(" {e} ", e = entry.name)
+                    format!(" {e} ", e = entry.name())
                 };
                 if name.len() > self.panel_file_name.width as usize {
                     name.truncate(self.panel_file_name.width.saturating_sub(3) as usize);
@@ -246,36 +226,18 @@ impl Dune {
                 }
                 self.panel_file_name.draw_text(&name, 0, i, style);
 
-                // TODO: Can we remove the dependency on chrono?
-                let last_modified: chrono::DateTime<chrono::Local> = entry.last_modified.into();
                 self.panel_file_last_modified.draw_text(
-                    last_modified.format("%e %b %y").to_string().as_str(),
+                    entry.last_modified().format("%e %b %y").to_string().as_str(),
                     0,
                     i,
                     ContentStyle::new().dim(),
                 );
 
-                let size = if entry.size_kib > 1024 * 1024 * 1024 * 1024 * 1024 {
-                    format!(
-                        "{s:3} PiB",
-                        s = entry.size_kib / 1024 * 1024 * 1024 * 1024 * 1024
-                    )
-                } else if entry.size_kib > 1024 * 1024 * 1024 * 1024 {
-                    format!("{s:3} TiB", s = entry.size_kib / 1024 * 1024 * 1024 * 1024)
-                } else if entry.size_kib > 1024 * 1024 * 1024 {
-                    format!("{s:3} GiB", s = entry.size_kib / 1024 * 1024 * 1024)
-                } else if entry.size_kib > 1024 * 1024 {
-                    format!("{s:3} MiB", s = entry.size_kib / 1024 * 1024)
-                } else if entry.size_kib > 1024 {
-                    format!("{s:3} KiB", s = entry.size_kib / 1024)
-                } else {
-                    format!("{s:3} B", s = entry.size_kib)
-                };
                 self.panel_file_size
-                    .draw_text(&size, 0, i, ContentStyle::new().dim());
+                    .draw_text(&entry.pretty_size(), 0, i, ContentStyle::new().dim());
 
                 let mut permissions = String::with_capacity(12); // d rwxrwxrwx
-                permissions.push(if entry.is_dir { 'd' } else { '-' });
+                permissions.push(if entry.is_dir() { 'd' } else { '-' });
                 permissions.push(' ');
                 for i in 0..3 {
                     permissions.push(if mode >> i & 0o1 > 0 { 'r' } else { '-' });
@@ -299,7 +261,8 @@ impl Dune {
                 StateMsg::Ok => (
                     // "TODO: Add some info here".to_string(),
                     format!(
-                        "window: {window} content_len: {cl} selected_line: {sl} selected_entry: {se} view_window: {vws}..{vwe} ({vwl}) panel_state: {ps} ",
+                        "fps: {fps} window: {window} content_len: {cl} selected_line: {sl} selected_entry: {se} view_window: {vws}..{vwe} ({vwl}) panel_state: {ps} ",
+                        fps = Duration::from_secs(1).as_micros() / self.delta_time.as_micros(),
                         sl = self.selected_line,
                         se = self.selected_entry,
                         vws = self.view_window.0,
@@ -312,7 +275,7 @@ impl Dune {
                     ContentStyle::new().on_white().black(),
                 ),
                 StateMsg::Info(msg) => (
-                    format!("{msg}"),
+                    msg.to_owned(),
                     ContentStyle::new().on_white().black().bold(),
                 ),
             };
@@ -383,38 +346,11 @@ impl Dune {
 
         self.entries.clear();
         for entry in fs::read_dir(&curr_dir)? {
-            let entry = entry?;
-            let metadata = entry.metadata()?;
-            self.entries.push(FileInfo {
-                name: entry
-                    .file_name()
-                    .to_str()
-                    .unwrap_or(INVALID_FILE)
-                    .to_owned(),
-                path_abs: entry.path(),
-                is_dir: metadata.is_dir(),
-                permissions: metadata.permissions(),
-                last_modified: metadata.modified()?,
-                size_kib: metadata.len(),
-            });
+            self.entries.push(entry?.try_into()?);
         }
         self.resize_view_window();
 
-        // Current directory
-        self.curr_dir = FileInfo {
-            is_dir: true, // We can go inside non-dirs
-            // TODO: Is the default empty? Maybe handle this better;
-            name: curr_dir
-                .file_name()
-                .unwrap_or_default()
-                .to_str()
-                .unwrap_or(INVALID_FILE)
-                .to_owned(),
-            permissions: fs::metadata(&curr_dir)?.permissions(),
-            path_abs: curr_dir,
-            last_modified: time::SystemTime::now(), // TODO: Actually get this
-            size_kib: 0,                            // TODO: add
-        };
+        self.curr_dir = curr_dir.try_into()?;
 
         self.updated_entries = true;
 
@@ -483,14 +419,15 @@ impl Dune {
                     // If known command
                     match action {
                         ActionCommand::Execute => {
+                            // TODO: This require better input handling
                             let mut prompt_split = self.prompt.split(' ');
                             if let Some(cmd) = prompt_split.next() {
                                 let args = prompt_split.collect::<Vec<&str>>();
                                 let mut exec = std::process::Command::new(cmd);
                                 let exec = exec
                                     .args(args)
-                                    .arg(self.entries[self.selected_entry].path_abs.as_os_str());
-                                // exec.spawn()?;
+                                    .arg(self.entries[self.selected_entry].path_str());
+                                // exec.spawn()?; // Let's not spawn until we have better input handling
                                 self.state = StateMsg::Info(format!("Execute: {exec:?}"));
                                 self.update_entries()?;
                             }
@@ -551,15 +488,15 @@ impl Dune {
 
                         ActionExplorer::DirEnter => {
                             if let Some(entry) = self.entries.get(self.selected_entry) {
-                                if !entry.is_dir {
+                                if !entry.is_dir() {
                                     self.state = StateMsg::Error(format!(
                                         "Tried to enter `{f}`, but failed because it is not a directory",
-                                        f = entry.name
+                                        f = entry.name()
                                     ));
-                                } else if let Err(err) = Self::cd(&entry.name) {
+                                } else if let Err(err) = cd(entry.name()) {
                                     self.state = StateMsg::Error(format!(
                                         "Tried to enter `{f}`, but failed because {err}",
-                                        f = entry.name
+                                        f = entry.name()
                                     ))
                                 } else {
                                     self.update_entries()?;
@@ -571,7 +508,7 @@ impl Dune {
                         }
 
                         ActionExplorer::DirLeave => {
-                            Self::cd("..")?;
+                            cd("..")?;
                             self.update_entries()?;
                         }
 
@@ -587,26 +524,31 @@ impl Dune {
     fn unknown_event(&mut self, _evt: Event) {
         // For now, don't do anything...
     }
+}
 
-    fn cd<P: AsRef<Path>>(dir: P) -> io::Result<()> {
-        env::set_current_dir(dir)
-    }
+fn cd<P: AsRef<Path>>(dir: P) -> io::Result<()> {
+    env::set_current_dir(dir)
 }
 
 fn main() -> ExitCode {
-    let mut app = Dune::new(Arc::new(Mutex::new(VTerm::new())), key_bindings::new());
+    let starting_dir = env::current_dir().unwrap_or_else(|e| {
+        eprintln!("ERROR: {e:?}");
+        ".".into() // Default to `.` as last choice
+    });
 
-    let path_;
-    match app.run() {
+    let mut app = Dune::new(Arc::new(Mutex::new(VTerm::new())), key_bindings::new(), starting_dir);
+
+    let path = match app.run() {
         Err(e) => {
             eprintln!("ERROR: {e:?}");
             return ExitCode::FAILURE;
         }
         Ok(path) => {
-            path_ = path.to_path_buf();
+            path
         }
-    }
-    drop(app);
-    println!("Run: cd {path_:?}");
-    return ExitCode::SUCCESS;
+    };
+    
+    println!("Run: cd {path:?}");
+    
+    ExitCode::SUCCESS
 }

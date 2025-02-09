@@ -64,7 +64,7 @@ impl KeyBindings {
 
 pub fn from_key_code(code: KeyCode) -> Event {
     Event::Key(KeyEvent {
-        code: code,
+        code,
         modifiers: KeyModifiers::NONE,
         kind: KeyEventKind::Press,
         state: KeyEventState::NONE,

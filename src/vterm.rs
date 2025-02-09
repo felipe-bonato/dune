@@ -151,7 +151,7 @@ impl Panel {
             y: 0,
             width: 0,
             height: 0,
-            vterm: vterm,
+            vterm,
         }
     }
 
@@ -185,6 +185,7 @@ impl Panel {
         self.height = height;
     }
 
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.fill(' ', ContentStyle::new())
     }
