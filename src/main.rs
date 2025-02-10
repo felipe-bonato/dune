@@ -25,9 +25,6 @@ use vterm::{Panel, VTerm};
 // TODO: Improve text styling, currently it's all over the place
 //       it should come from a config file (maybe the same that the keybindings use?).
 
-const TARGET_FPS: u64 = 120;
-const TARGET_FRAME_TIME_MS: u64 = 1000 / TARGET_FPS;
-
 enum StateMsg {
     Ok,
     Info(String),
@@ -105,6 +102,7 @@ impl Dune {
         VTerm::clear()?;
         self.update_entries()?;
         self.update_panels_size();
+        self.render()?;
 
         loop {
             let start = time::Instant::now();
@@ -115,185 +113,180 @@ impl Dune {
 
             self.poll_events()?;
 
-            let term_size = self.vterm.lock().unwrap().size();
-            if term_size.0 <= 22 || term_size.1 <= 9 {
-                execute!(
-                    io::stdout(),
-                    cursor::MoveTo(0, 0),
-                    style::PrintStyledContent(
-                        style::ContentStyle::new()
-                            .bold()
-                            .red()
-                            .reverse()
-                            .apply(" NO SPACE TO DRAW ")
-                    ),
-                    cursor::MoveTo(0, 1),
-                    style::PrintStyledContent(
-                        style::ContentStyle::new().bold().apply("Please resize window")
-                    ),
-                    cursor::MoveTo(0, 2),
-                    style::PrintStyledContent(
-                        style::ContentStyle::new().apply("Minimum window size: 22x9")
-                    ),
-                )?;
+            self.render()?;
+
+            self.delta_time = time::Instant::now() - start;
+        }
+    }
+
+    fn render(&mut self) -> io::Result<()> {
+        let term_size = self.vterm.lock().unwrap().size();
+        if term_size.0 <= 22 || term_size.1 <= 9 {
+            execute!(
+                io::stdout(),
+                cursor::MoveTo(0, 0),
+                style::PrintStyledContent(
+                    style::ContentStyle::new()
+                        .bold()
+                        .red()
+                        .reverse()
+                        .apply(" NO SPACE TO DRAW ")
+                ),
+                cursor::MoveTo(0, 1),
+                style::PrintStyledContent(
+                    style::ContentStyle::new()
+                        .bold()
+                        .apply("Please resize window")
+                ),
+                cursor::MoveTo(0, 2),
+                style::PrintStyledContent(
+                    style::ContentStyle::new().apply("Minimum window size: 22x9")
+                ),
+            )?;
+
+            return Ok(());
+        }
+
+        match self.mode {
+            Mode::Explorer => {
+                VTerm::cursor_hide()?;
+            }
+
+            Mode::Command => {
+                self.panel_prompt
+                    .draw_text(&self.prompt, 0, 0, style::ContentStyle::new());
+                VTerm::cursor_show()?;
+            }
+        }
+
+        if self.updated_entries {
+            self.selected_line = 0;
+            self.selected_entry = 0;
+            self.updated_entries = false;
+        }
+
+        // Draw header
+        let style = style::ContentStyle::new().on_grey();
+        self.panel_header.fill(' ', style);
+        if self.delta_time == time::Duration::ZERO {
+            self.delta_time = time::Duration::from_millis(16);
+        }
+        let mode = match self.mode {
+            Mode::Command => "Command Mode",
+            Mode::Explorer => "Explorer Mode",
+        };
+        let text = format!(
+            "{path}: (total {total})",
+            path = self.curr_dir.path_str(),
+            total = self.entries.len()
+        );
+        self.panel_header
+            .draw_text(&text, 0, 0, style.bold().black());
+        let w = self.vterm.lock().unwrap().width;
+        self.panel_header
+            .draw_text(mode, w - 1 - mode.len() as u16, 0, style.bold().black());
+
+        // Draw entries
+        let start_window = self.view_window.0 as usize; // TODO: not scroll if everything can fit on the screen.
+        let end_window = min(self.view_window.1 as usize, self.entries.len());
+        for (i, entry) in self.entries[start_window..end_window].iter().enumerate() {
+            let i = i as u16;
+            // let entry_idx = i + self.view_window.0;
+
+            // Keeps going
+            if i == self.panel_file_name.height - 1
+                && self.entries.len() > self.view_window.1 as usize
+            {
+                self.panel_file_name
+                    .draw_text("   ...   ", 0, i, style::ContentStyle::new());
                 continue;
             }
 
-            match self.mode {
-                Mode::Explorer => {
-                    VTerm::cursor_hide()?;
+            if i == 0 && self.view_window.0 > 0 {
+                self.panel_file_name
+                    .draw_text("   ...   ", 0, i, style::ContentStyle::new());
+                continue;
+            }
+
+            let style = if i == self.selected_line {
+                match self.mode {
+                    Mode::Command => style::ContentStyle::new().bold().on_dark_green(),
+                    Mode::Explorer => style::ContentStyle::new().bold().reverse(),
                 }
-
-                Mode::Command => {
-                    self.panel_prompt
-                        .draw_text(&self.prompt, 0, 0, style::ContentStyle::new());
-                    VTerm::cursor_show()?;
-                }
-            }
-
-            if self.updated_entries {
-                self.selected_line = 0;
-                self.selected_entry = 0;
-                self.updated_entries = false;
-            }
-
-            // Draw header
-            let style = style::ContentStyle::new().on_grey();
-            self.panel_header.fill(' ', style);
-            if self.delta_time == time::Duration::ZERO {
-                self.delta_time = time::Duration::from_millis(16);
-            }
-            let mode = match self.mode {
-                Mode::Command => "Command Mode",
-                Mode::Explorer => "Explorer Mode",
+            } else {
+                style::ContentStyle::new().bold()
             };
-            let text = format!(
-                "{path}: (total {total})",
-                path = self.curr_dir.path_str(),
-                total = self.entries.len()
-            );
-            self.panel_header
-                .draw_text(&text, 0, 0, style.bold().black());
-            let w = self.vterm.lock().unwrap().width;
-            self.panel_header
-                .draw_text(mode, w - 1 - mode.len() as u16, 0, style.bold().black());
 
-            // Draw entries
-            let start_window = self.view_window.0 as usize; // TODO: not scroll if everything can fit on the screen.
-            let end_window = min(self.view_window.1 as usize, self.entries.len());
-            for (i, entry) in self.entries[start_window..end_window].iter().enumerate() {
-                let i = i as u16;
-                // let entry_idx = i + self.view_window.0;
+            let mode = entry.mode();
 
-                // Keeps going
-                if i == self.panel_file_name.height - 1
-                    && self.entries.len() > self.view_window.1 as usize
-                {
-                    self.panel_file_name
-                        .draw_text("   ...   ", 0, i, style::ContentStyle::new());
-                    continue;
-                }
+            let style = if entry.is_dir() {
+                style.cyan()
+            } else if mode & 0o001 == 1 {
+                // Is executable
+                style.green()
+            } else if entry.is_read_only() {
+                style.grey()
+            } else {
+                style
+            };
 
-                if i == 0 && self.view_window.0 > 0 {
-                    self.panel_file_name
-                        .draw_text("   ...   ", 0, i, style::ContentStyle::new());
-                    continue;
-                }
+            let style = if entry.name().starts_with('.') {
+                // Unix hidden
+                style.dim()
+            } else {
+                style
+            };
 
-                let style = if i == self.selected_line {
-                    match self.mode {
-                        Mode::Command => style::ContentStyle::new().bold().on_dark_green(),
-                        Mode::Explorer => style::ContentStyle::new().bold().reverse(),
-                    }
-                } else {
-                    style::ContentStyle::new().bold()
-                };
-
-                let mode = entry.mode();
-
-                let style = if entry.is_dir() {
-                    style.cyan()
-                } else if mode & 0o001 == 1 {
-                    // Is executable
-                    style.green()
-                } else if entry.is_read_only() {
-                    style.grey()
-                } else {
-                    style
-                };
-
-                let style = if entry.name().starts_with('.') {
-                    // Unix hidden
-                    style.dim()
-                } else {
-                    style
-                };
-
-                let mut name = if self.mode == Mode::Command && i == self.selected_line {
-                    // Highlight selected line
-                    format!(">>> {e} ", e = entry.name())
-                } else {
-                    format!(" {e} ", e = entry.name())
-                };
-                if name.len() > self.panel_file_name.width as usize {
-                    name.truncate(self.panel_file_name.width.saturating_sub(3) as usize);
-                    name.push_str("...");
-                }
-                self.panel_file_name.draw_text(&name, 0, i, style);
-
-                self.panel_file_last_modified.draw_text(
-                    entry
-                        .last_modified()
-                        .format("%e %b %y")
-                        .to_string()
-                        .as_str(),
-                    0,
-                    i,
-                    style::ContentStyle::new().dim(),
-                );
-
-                self.panel_file_size.draw_text(
-                    &entry.pretty_size(),
-                    0,
-                    i,
-                    style::ContentStyle::new().dim(),
-                );
-
-                let mut permissions = String::with_capacity(12); // d rwxrwxrwx
-                permissions.push(if entry.is_dir() { 'd' } else { '-' });
-                permissions.push(' ');
-                for i in 0..3 {
-                    permissions.push(if mode >> i & 0o1 > 0 { 'r' } else { '-' });
-                    permissions.push(if mode >> i & 0o2 > 0 { 'w' } else { '-' });
-                    permissions.push(if mode >> i & 0o4 > 0 { 'x' } else { '-' });
-                }
-                self.panel_file_permissions.draw_text(
-                    permissions.as_str(),
-                    0,
-                    i,
-                    style::ContentStyle::new().dim(),
-                );
+            let mut name = entry.name().to_string();
+            if name.len() > self.panel_file_name.width as usize {
+                // TODO: Maybe do this with `format!`?
+                name.truncate(self.panel_file_name.width.saturating_sub(3) as usize);
+                name.push_str("...");
             }
+            self.panel_file_name.draw_text(&name, 0, i, style);
 
-            // Draw state
-            let (text, style) = match &self.state {
+            self.panel_file_last_modified.draw_text(
+                entry
+                    .last_modified()
+                    .format("%e %b %y")
+                    .to_string()
+                    .as_str(),
+                0,
+                i,
+                style::ContentStyle::new().dim(),
+            );
+
+            self.panel_file_size.draw_text(
+                &entry.pretty_size(),
+                0,
+                i,
+                style::ContentStyle::new().dim(),
+            );
+
+            let mut permissions = String::with_capacity(12); // d rwxrwxrwx
+            permissions.push(if entry.is_dir() { 'd' } else { '-' });
+            permissions.push(' ');
+            for i in 0..3 {
+                permissions.push(if mode >> i & 0o1 > 0 { 'r' } else { '-' });
+                permissions.push(if mode >> i & 0o2 > 0 { 'w' } else { '-' });
+                permissions.push(if mode >> i & 0o4 > 0 { 'x' } else { '-' });
+            }
+            self.panel_file_permissions.draw_text(
+                permissions.as_str(),
+                0,
+                i,
+                style::ContentStyle::new().dim(),
+            );
+        }
+
+        // Draw state
+        let (text, style) = match &self.state {
                 StateMsg::Error(msg) => (
                     format!("ERROR: {msg}."),
                     style::ContentStyle::new().on_dark_red().white().bold(),
                 ),
                 StateMsg::Ok => (
-                    format!(
-                        "fps: {fps} window: {window} content_len: {cl} selected_line: {sl} selected_entry: {se} view_window: {vws}..{vwe} ({vwl}) panel_state: {ps} ",
-                        fps = time::Duration::from_secs(1).as_micros() / self.delta_time.as_micros(),
-                        sl = self.selected_line,
-                        se = self.selected_entry,
-                        vws = self.view_window.0,
-                        vwe = self.view_window.1,
-                        window = self.panel_file_name.height,
-                        cl = self.entries.len(),
-                        vwl = self.view_window.1 - self.view_window.0,
-                        ps = self.panel_state.width
-                    ),
+                    "".to_owned(),
                     style::ContentStyle::new().on_white().black(),
                 ),
                 StateMsg::Info(msg) => (
@@ -301,19 +294,18 @@ impl Dune {
                     style::ContentStyle::new().on_white().black().bold(),
                 ),
             };
-            self.panel_state.fill(' ', style);
-            self.panel_state.draw_text(&text, 0, 0, style);
+        self.panel_state.fill(' ', style);
+        self.panel_state.draw_text(&text, 0, 0, style);
 
-            self.render_terminal()?;
+        self.render_terminal()?;
 
-            // Cursor
-            self.vterm
-                .lock()
-                .unwrap()
-                .cursor_move(self.cursor.0, self.cursor.1)?;
+        // Cursor
+        self.vterm
+            .lock()
+            .unwrap()
+            .cursor_move(self.cursor.0, self.cursor.1)?;
 
-            self.delta_time = time::Instant::now() - start;
-        }
+        Ok(())
     }
 
     fn view_window_overflow(&self, i: u16) -> bool {
@@ -393,16 +385,8 @@ impl Dune {
     }
 
     fn poll_events(&mut self) -> io::Result<()> {
-        loop {
-            match event::poll(time::Duration::from_millis(TARGET_FRAME_TIME_MS)) {
-                Ok(true) => {
-                    self.handle_event(event::read()?)?;
-                    continue;
-                }
-                Ok(false) => return Ok(()),
-                Err(e) => return Err(e),
-            }
-        }
+        self.handle_event(event::read()?)
+        // TODO: Wait for a few millis to se if any event comes right after the first one.
     }
 
     fn handle_event(&mut self, evt: event::Event) -> io::Result<()> {
@@ -470,12 +454,16 @@ impl Dune {
                                     let stdout = str::from_utf8(&output.stdout).map_err(|e| {
                                         io::Error::new(io::ErrorKind::InvalidData, e)
                                     })?;
-                                    self.state = StateMsg::Info(format!("{pretty_command}: exit {exit_code}: {stdout}"));
+                                    self.state = StateMsg::Info(format!(
+                                        "{pretty_command}: exit {exit_code}: {stdout}"
+                                    ));
                                 } else {
                                     let stderr = str::from_utf8(&output.stderr).map_err(|e| {
                                         io::Error::new(io::ErrorKind::InvalidData, e)
                                     })?;
-                                    self.state = StateMsg::Error(format!("{pretty_command}: exit {exit_code}: {stderr}"));
+                                    self.state = StateMsg::Error(format!(
+                                        "{pretty_command}: exit {exit_code}: {stderr}"
+                                    ));
                                 }
                                 self.update_entries()?;
                             }
@@ -548,6 +536,7 @@ impl Dune {
                                     ))
                                 } else {
                                     self.update_entries()?;
+                                    self.state = StateMsg::Ok;
                                 }
                             } else {
                                 unreachable!("Selected line is out of bounds");
@@ -558,6 +547,7 @@ impl Dune {
                         ActionExplorer::DirLeave => {
                             cd("..")?;
                             self.update_entries()?;
+                            self.state = StateMsg::Ok;
                         }
 
                         ActionExplorer::EntriesUpdate => self.update_entries()?,
