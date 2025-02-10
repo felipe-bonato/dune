@@ -281,19 +281,16 @@ impl Dune {
 
         // Draw state
         let (text, style) = match &self.state {
-                StateMsg::Error(msg) => (
-                    format!("ERROR: {msg}."),
-                    style::ContentStyle::new().on_dark_red().white().bold(),
-                ),
-                StateMsg::Ok => (
-                    "".to_owned(),
-                    style::ContentStyle::new().on_white().black(),
-                ),
-                StateMsg::Info(msg) => (
-                    msg.to_owned(),
-                    style::ContentStyle::new().on_white().black().bold(),
-                ),
-            };
+            StateMsg::Error(msg) => (
+                format!("ERROR: {msg}."),
+                style::ContentStyle::new().on_dark_red().white().bold(),
+            ),
+            StateMsg::Ok => ("".to_owned(), style::ContentStyle::new().on_white().black()),
+            StateMsg::Info(msg) => (
+                msg.to_owned(),
+                style::ContentStyle::new().on_white().black().bold(),
+            ),
+        };
         self.panel_state.fill(' ', style);
         self.panel_state.draw_text(&text, 0, 0, style);
 
@@ -525,10 +522,16 @@ impl Dune {
                         ActionExplorer::DirEnter => {
                             if let Some(entry) = self.entries.get(self.selected_entry) {
                                 if !entry.is_dir() {
-                                    self.state = StateMsg::Error(format!(
-                                        "Tried to enter `{f}`, but failed because it is not a directory",
-                                        f = entry.name()
-                                    ));
+                                    match open::that(entry.path()) {
+                                        Ok(()) => self.state = StateMsg::Ok,
+                                        Err(e) => {
+                                            self.state = StateMsg::Error(format!(
+                                                "Tried to open `{f}`, but failed: {err_msg}",
+                                                f = entry.name(),
+                                                err_msg = e
+                                            ))
+                                        }
+                                    }
                                 } else if let Err(err) = cd(entry.name()) {
                                     self.state = StateMsg::Error(format!(
                                         "Tried to enter `{f}`, but failed because {err}",
