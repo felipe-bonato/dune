@@ -3,18 +3,27 @@ mod key_bindings;
 mod vterm;
 
 use std::{
-    cmp::min, env, fs, io::{self, stdout}, path::{self, Path}, process::ExitCode, sync::{Arc, Mutex}, time::{self, Duration}
+    cmp::min,
+    env, fs, io, path, process,
+    sync::{Arc, Mutex},
+    time,
 };
 
 use crossterm::{
-    self, cursor,
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
+    cursor,
+    event,
     execute,
-    style::{self, ContentStyle, Stylize},
+    style,
+    // Keep qualified for now due to traits
+    style::Stylize,
 };
 
 use key_bindings::{ActionCommand, ActionExplorer, ActionGlobal, KeyBindings};
 use vterm::{Panel, VTerm};
+
+// TODO: Better separation into modules.
+// TODO: Improve text styling, currently it's all over the place
+//       it should come from a config file (maybe the same that the keybindings use?).
 
 const TARGET_FPS: u64 = 120;
 const TARGET_FRAME_TIME_MS: u64 = 1000 / TARGET_FPS;
@@ -57,13 +66,19 @@ struct Dune {
 }
 
 impl Dune {
-    fn new(vterm: Arc<Mutex<VTerm>>, key_bindings: KeyBindings, starting_path: path::PathBuf) -> Self {
+    fn new(
+        vterm: Arc<Mutex<VTerm>>,
+        key_bindings: KeyBindings,
+        starting_path: path::PathBuf,
+    ) -> Self {
         Self {
             vterm: vterm.clone(),
             should_quit: false,
             updated_entries: false,
             entries: Vec::new(),
-            curr_dir: starting_path.try_into().expect("could not open current directory"),
+            curr_dir: starting_path
+                .try_into()
+                .expect("could not open current directory"),
             view_window: (0, 0),
             delta_time: time::Duration::ZERO,
             state: StateMsg::Ok,
@@ -85,14 +100,14 @@ impl Dune {
 
     /// Application loop
     /// Returns the path the user is currently in as Ok(path)
-    pub fn run(&mut self) -> io::Result<&Path> {
+    pub fn run(&mut self) -> io::Result<&path::Path> {
         VTerm::clear()?;
         self.update_entries()?;
         self.update_panels_size();
 
         loop {
             let start = time::Instant::now();
-            
+
             if self.should_quit {
                 return Ok(self.curr_dir.path());
             }
@@ -102,10 +117,10 @@ impl Dune {
             let term_size = self.vterm.lock().unwrap().size();
             if term_size.0 <= 22 || term_size.1 <= 9 {
                 execute!(
-                    stdout(),
+                    io::stdout(),
                     cursor::MoveTo(0, 0),
                     style::PrintStyledContent(
-                        ContentStyle::new()
+                        style::ContentStyle::new()
                             .bold()
                             .red()
                             .reverse()
@@ -113,11 +128,11 @@ impl Dune {
                     ),
                     cursor::MoveTo(0, 1),
                     style::PrintStyledContent(
-                        ContentStyle::new().bold().apply("Please resize window")
+                        style::ContentStyle::new().bold().apply("Please resize window")
                     ),
                     cursor::MoveTo(0, 2),
                     style::PrintStyledContent(
-                        ContentStyle::new().apply("Minimum window size: 22x9")
+                        style::ContentStyle::new().apply("Minimum window size: 22x9")
                     ),
                 )?;
                 continue;
@@ -130,7 +145,7 @@ impl Dune {
 
                 Mode::Command => {
                     self.panel_prompt
-                        .draw_text(&self.prompt, 0, 0, ContentStyle::new());
+                        .draw_text(&self.prompt, 0, 0, style::ContentStyle::new());
                     VTerm::cursor_show()?;
                 }
             }
@@ -142,16 +157,20 @@ impl Dune {
             }
 
             // Draw header
-            let style = ContentStyle::new().on_grey();
+            let style = style::ContentStyle::new().on_grey();
             self.panel_header.fill(' ', style);
-            if self.delta_time == Duration::ZERO {
-                self.delta_time = Duration::from_millis(16);
+            if self.delta_time == time::Duration::ZERO {
+                self.delta_time = time::Duration::from_millis(16);
             }
             let mode = match self.mode {
-                Mode::Command =>  "Command Mode",
+                Mode::Command => "Command Mode",
                 Mode::Explorer => "Explorer Mode",
             };
-            let text = format!("{path}: (total {total})", path = self.curr_dir.path_str(), total = self.entries.len());
+            let text = format!(
+                "{path}: (total {total})",
+                path = self.curr_dir.path_str(),
+                total = self.entries.len()
+            );
             self.panel_header
                 .draw_text(&text, 0, 0, style.bold().black());
             let w = self.vterm.lock().unwrap().width;
@@ -170,23 +189,23 @@ impl Dune {
                     && self.entries.len() > self.view_window.1 as usize
                 {
                     self.panel_file_name
-                        .draw_text("   ...   ", 0, i, ContentStyle::new());
+                        .draw_text("   ...   ", 0, i, style::ContentStyle::new());
                     continue;
                 }
 
                 if i == 0 && self.view_window.0 > 0 {
                     self.panel_file_name
-                        .draw_text("   ...   ", 0, i, ContentStyle::new());
+                        .draw_text("   ...   ", 0, i, style::ContentStyle::new());
                     continue;
                 }
 
                 let style = if i == self.selected_line {
                     match self.mode {
-                        Mode::Command => ContentStyle::new().bold().on_dark_green(),
-                        Mode::Explorer => ContentStyle::new().bold().reverse(),
+                        Mode::Command => style::ContentStyle::new().bold().on_dark_green(),
+                        Mode::Explorer => style::ContentStyle::new().bold().reverse(),
                     }
                 } else {
-                    ContentStyle::new().bold()
+                    style::ContentStyle::new().bold()
                 };
 
                 let mode = entry.mode();
@@ -202,7 +221,8 @@ impl Dune {
                     style
                 };
 
-                let style = if entry.name().starts_with('.') { // Unix hidden
+                let style = if entry.name().starts_with('.') {
+                    // Unix hidden
                     style.dim()
                 } else {
                     style
@@ -221,14 +241,22 @@ impl Dune {
                 self.panel_file_name.draw_text(&name, 0, i, style);
 
                 self.panel_file_last_modified.draw_text(
-                    entry.last_modified().format("%e %b %y").to_string().as_str(),
+                    entry
+                        .last_modified()
+                        .format("%e %b %y")
+                        .to_string()
+                        .as_str(),
                     0,
                     i,
-                    ContentStyle::new().dim(),
+                    style::ContentStyle::new().dim(),
                 );
 
-                self.panel_file_size
-                    .draw_text(&entry.pretty_size(), 0, i, ContentStyle::new().dim());
+                self.panel_file_size.draw_text(
+                    &entry.pretty_size(),
+                    0,
+                    i,
+                    style::ContentStyle::new().dim(),
+                );
 
                 let mut permissions = String::with_capacity(12); // d rwxrwxrwx
                 permissions.push(if entry.is_dir() { 'd' } else { '-' });
@@ -242,7 +270,7 @@ impl Dune {
                     permissions.as_str(),
                     0,
                     i,
-                    ContentStyle::new().dim(),
+                    style::ContentStyle::new().dim(),
                 );
             }
 
@@ -250,12 +278,12 @@ impl Dune {
             let (text, style) = match &self.state {
                 StateMsg::Error(msg) => (
                     format!("ERROR: {msg}."),
-                    ContentStyle::new().on_dark_red().white().bold(),
+                    style::ContentStyle::new().on_dark_red().white().bold(),
                 ),
                 StateMsg::Ok => (
                     format!(
                         "fps: {fps} window: {window} content_len: {cl} selected_line: {sl} selected_entry: {se} view_window: {vws}..{vwe} ({vwl}) panel_state: {ps} ",
-                        fps = Duration::from_secs(1).as_micros() / self.delta_time.as_micros(),
+                        fps = time::Duration::from_secs(1).as_micros() / self.delta_time.as_micros(),
                         sl = self.selected_line,
                         se = self.selected_entry,
                         vws = self.view_window.0,
@@ -265,11 +293,11 @@ impl Dune {
                         vwl = self.view_window.1 - self.view_window.0,
                         ps = self.panel_state.width
                     ),
-                    ContentStyle::new().on_white().black(),
+                    style::ContentStyle::new().on_white().black(),
                 ),
                 StateMsg::Info(msg) => (
                     msg.to_owned(),
-                    ContentStyle::new().on_white().black().bold(),
+                    style::ContentStyle::new().on_white().black().bold(),
                 ),
             };
             self.panel_state.fill(' ', style);
@@ -365,7 +393,7 @@ impl Dune {
 
     fn poll_events(&mut self) -> io::Result<()> {
         loop {
-            match event::poll(Duration::from_millis(TARGET_FRAME_TIME_MS)) {
+            match event::poll(time::Duration::from_millis(TARGET_FRAME_TIME_MS)) {
                 Ok(true) => {
                     self.handle_event(event::read()?)?;
                     continue;
@@ -376,9 +404,9 @@ impl Dune {
         }
     }
 
-    fn handle_event(&mut self, evt: Event) -> io::Result<()> {
+    fn handle_event(&mut self, evt: event::Event) -> io::Result<()> {
         // Special events
-        if let Event::Resize(w, h) = evt {
+        if let event::Event::Resize(w, h) = evt {
             self.vterm.lock().unwrap().width = w;
             self.vterm.lock().unwrap().height = h;
             self.vterm.lock().unwrap().queue_empty();
@@ -434,9 +462,9 @@ impl Dune {
                 } else {
                     // It's just a char
                     match evt {
-                        Event::Key(KeyEvent {
-                            code: KeyCode::Char(ch),
-                            kind: KeyEventKind::Press,
+                        event::Event::Key(event::KeyEvent {
+                            code: event::KeyCode::Char(ch),
+                            kind: event::KeyEventKind::Press,
                             ..
                         }) => {
                             self.prompt.push(ch);
@@ -514,41 +542,43 @@ impl Dune {
         Ok(())
     }
 
-    fn unknown_event(&mut self, _evt: Event) {
+    fn unknown_event(&mut self, _evt: event::Event) {
         // For now, don't do anything...
     }
 }
 
-fn cd<P: AsRef<Path>>(dir: P) -> io::Result<()> {
+fn cd<P: AsRef<path::Path>>(dir: P) -> io::Result<()> {
     env::set_current_dir(dir)
 }
 
-fn main() -> ExitCode {
+fn main() -> process::ExitCode {
     let starting_dir = env::current_dir().unwrap_or_else(|e| {
         eprintln!("ERROR: {e:?}");
         ".".into() // Default to `.` as last choice
     });
 
-    let mut app = Dune::new(Arc::new(Mutex::new(VTerm::new())), key_bindings::new(), starting_dir);
+    let mut app = Dune::new(
+        Arc::new(Mutex::new(VTerm::new())),
+        key_bindings::new(),
+        starting_dir,
+    );
 
     let path = match app.run() {
         Err(e) => {
             eprintln!("ERROR: {e:?}");
-            return ExitCode::FAILURE;
+            return process::ExitCode::FAILURE;
         }
-        Ok(path) => {
-            path
-        }
+        Ok(path) => path,
     };
-    
+
     // Used to cd to a dir after quitting.
     // The user will have an alias, that after executing dune, will cd to the contents of the `/tmp/dune-cd.txt` file.
     // This solution is not great. But it's good enough for now.
     // TODO: Is there a better solution?
     if let Err(e) = fs::write("/tmp/dune-cd.txt", path.to_str().unwrap_or(".")) {
         eprintln!("ERROR: {e:?}");
-        return ExitCode::FAILURE;
+        return process::ExitCode::FAILURE;
     }
-    
-    ExitCode::SUCCESS
+
+    process::ExitCode::SUCCESS
 }
