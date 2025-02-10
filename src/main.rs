@@ -3,13 +3,7 @@ mod key_bindings;
 mod vterm;
 
 use std::{
-    cmp::min,
-    env, fs,
-    io::{self, stdout},
-    path::{self, Path},
-    process::ExitCode,
-    sync::{Arc, Mutex},
-    time::{self, Duration},
+    cmp::min, env, fs, io::{self, stdout}, path::{self, Path}, process::ExitCode, sync::{Arc, Mutex}, time::{self, Duration}
 };
 
 use crossterm::{
@@ -259,7 +253,6 @@ impl Dune {
                     ContentStyle::new().on_dark_red().white().bold(),
                 ),
                 StateMsg::Ok => (
-                    // "TODO: Add some info here".to_string(),
                     format!(
                         "fps: {fps} window: {window} content_len: {cl} selected_line: {sl} selected_entry: {se} view_window: {vws}..{vwe} ({vwl}) panel_state: {ps} ",
                         fps = Duration::from_secs(1).as_micros() / self.delta_time.as_micros(),
@@ -548,7 +541,14 @@ fn main() -> ExitCode {
         }
     };
     
-    println!("Run: cd {path:?}");
+    // Used to cd to a dir after quitting.
+    // The user will have an alias, that after executing dune, will cd to the contents of the `/tmp/dune-cd.txt` file.
+    // This solution is not great. But it's good enough for now.
+    // TODO: Is there a better solution?
+    if let Err(e) = fs::write("/tmp/dune-cd.txt", path.to_str().unwrap_or(".")) {
+        eprintln!("ERROR: {e:?}");
+        return ExitCode::FAILURE;
+    }
     
     ExitCode::SUCCESS
 }

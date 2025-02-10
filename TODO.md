@@ -21,7 +21,6 @@
         - Paste
         - Cut
 - Quality of Life / Improvements
-    - CD the navigated directory on quit;
     - Scroll acceleration
     - Text editing
         - Move the cursor with arrows
