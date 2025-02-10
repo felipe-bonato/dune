@@ -427,9 +427,8 @@ impl Dune {
                             if let Some(cmd) = prompt_split.next() {
                                 let args = prompt_split.collect::<Vec<&str>>();
                                 let mut exec = process::Command::new(cmd);
-                                let exec = exec
-                                    .args(args)
-                                    .arg(self.entries[self.selected_entry].path_str());
+                                // TODO: Allow patterns in args for selected file
+                                let exec = exec.args(args);
                                 // TODO: How are we dealing with user interaction?
                                 // TODO: Don't quit on error (if command doesn't exist it will error).
                                 let output = exec.output()?;

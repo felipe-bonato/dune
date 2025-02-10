@@ -26,3 +26,4 @@
         - Move the cursor with arrows
         - Selection
         - Word skipping (ctrl)
+        - Patterns (`{}`)
