@@ -44,14 +44,14 @@ struct Dune {
     updated_entries: bool,
     entries: Vec<file_info::FileInfo>,
     curr_dir: file_info::FileInfo,
-    view_window: (u16, u16), // Start and end of entries being presented on screen
+    view_window: (usize, usize), // Start and end of entries being presented on screen
     delta_time: time::Duration,
-    selected_line: u16,
+    selected_line: usize,
     selected_entry: usize,
     state: StateMsg,
     mode: Mode,
     prompt: String,
-    cursor: (u16, u16),
+    cursor: (usize, usize),
     key_bindings: KeyBindings,
     // Panels
     panel_header: Panel,
@@ -184,19 +184,17 @@ impl Dune {
             .draw_text(&text, 0, 0, style.bold().black());
         let w = self.vterm.lock().unwrap().width;
         self.panel_header
-            .draw_text(mode, w - 1 - mode.len() as u16, 0, style.bold().black());
+            .draw_text(mode, w - 1 - mode.len(), 0, style.bold().black());
 
         // Draw entries
-        let start_window = self.view_window.0 as usize; // TODO: not scroll if everything can fit on the screen.
-        let end_window = min(self.view_window.1 as usize, self.entries.len());
+        let start_window = self.view_window.0; // TODO: not scroll if everything can fit on the screen.
+        let end_window = min(self.view_window.1, self.entries.len());
         for (i, entry) in self.entries[start_window..end_window].iter().enumerate() {
-            let i = i as u16;
+            // let i = i as u16;
             // let entry_idx = i + self.view_window.0;
 
             // Keeps going
-            if i == self.panel_file_name.height - 1
-                && self.entries.len() > self.view_window.1 as usize
-            {
+            if i == self.panel_file_name.height - 1 && self.entries.len() > self.view_window.1 {
                 self.panel_file_name
                     .draw_text("   ...   ", 0, i, style::ContentStyle::new());
                 continue;
@@ -238,9 +236,9 @@ impl Dune {
             };
 
             let mut name = entry.name().to_string();
-            if name.len() > self.panel_file_name.width as usize {
+            if name.len() > self.panel_file_name.width {
                 // TODO: Maybe do this with `format!`?
-                name.truncate(self.panel_file_name.width.saturating_sub(3) as usize);
+                name.truncate(self.panel_file_name.width.saturating_sub(3));
                 name.push_str("...");
             }
             self.panel_file_name.draw_text(&name, 0, i, style);
@@ -305,11 +303,11 @@ impl Dune {
         Ok(())
     }
 
-    fn view_window_overflow(&self, i: u16) -> bool {
-        i >= self.view_window.1 - 1 && i <= self.entries.len() as u16
+    fn view_window_overflow(&self, i: usize) -> bool {
+        i >= self.view_window.1 - 1 && i <= self.entries.len()
     }
 
-    fn view_window_underflow(&self, i: u16) -> bool {
+    fn view_window_underflow(&self, i: usize) -> bool {
         self.view_window.0 > 0 && i == self.view_window.0
     }
 
@@ -325,10 +323,10 @@ impl Dune {
         self.panel_header.update_size(0, 0, w, 1);
 
         {
-            const PERMISSIONS_LEN: u16 = 12;
-            const SIZE_LEN: u16 = 8;
-            const LAST_MODIFIED_LEN: u16 = 10;
-            let mut len_left: u16 = w; // Lenght of the fixed elements on the table
+            const PERMISSIONS_LEN: usize = 12;
+            const SIZE_LEN: usize = 8;
+            const LAST_MODIFIED_LEN: usize = 10;
+            let mut len_left = w; // Lenght of the fixed elements on the table
 
             len_left = len_left.saturating_sub(PERMISSIONS_LEN);
             self.panel_file_permissions
@@ -369,10 +367,7 @@ impl Dune {
     }
 
     fn resize_view_window(&mut self) {
-        self.view_window = (
-            0,
-            min(self.entries.len() as u16, self.panel_file_name.height),
-        );
+        self.view_window = (0, min(self.entries.len(), self.panel_file_name.height));
         // TODO: Move this out of here
     }
 
@@ -389,8 +384,8 @@ impl Dune {
     fn handle_event(&mut self, evt: event::Event) -> io::Result<()> {
         // Special events
         if let event::Event::Resize(w, h) = evt {
-            self.vterm.lock().unwrap().width = w;
-            self.vterm.lock().unwrap().height = h;
+            self.vterm.lock().unwrap().width = w as usize;
+            self.vterm.lock().unwrap().height = h as usize;
             self.vterm.lock().unwrap().queue_empty();
             VTerm::clear()?;
             self.update_panels_size();
@@ -491,9 +486,8 @@ impl Dune {
                         ActionExplorer::ScrollUp => {
                             if self.selected_entry > 0 {
                                 self.selected_entry -= 1;
-                                if self.view_window_underflow(
-                                    self.selected_entry.saturating_sub(1) as u16
-                                ) {
+                                if self.view_window_underflow(self.selected_entry.saturating_sub(1))
+                                {
                                     self.view_window.0 = self.view_window.0.saturating_sub(1);
                                     self.view_window.1 = self.view_window.1.saturating_sub(1);
                                 } else {
@@ -507,8 +501,8 @@ impl Dune {
                                 && self.selected_entry < self.entries.len() - 1
                             {
                                 self.selected_entry += 1;
-                                if self.entries.len() > self.panel_file_name.height as usize // Don't need to scroll if everything fits.
-                                            && self.view_window_overflow(self.selected_entry as u16 + 1)
+                                if self.entries.len() > self.panel_file_name.height // Don't need to scroll if everything fits.
+                                            && self.view_window_overflow(self.selected_entry + 1)
                                 {
                                     self.view_window.0 += 1;
                                     self.view_window.1 += 1;

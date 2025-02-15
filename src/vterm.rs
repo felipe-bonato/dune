@@ -1,4 +1,8 @@
-use std::{io::{self, stdout, Write}, sync::{Arc, Mutex}};
+use std::{
+    cmp::min,
+    io::{self, stdout, Write},
+    sync::{Arc, Mutex},
+};
 
 use crossterm::{
     cursor, execute, queue,
@@ -24,14 +28,15 @@ impl Cell {
 pub struct VTerm {
     vterminal_last: Vec<Cell>,
     vterminal: Vec<Cell>,
-    pub width: u16,
-    pub height: u16,
+    pub width: usize,
+    pub height: usize,
 }
 
 impl VTerm {
     pub fn new() -> Self {
         terminal::enable_raw_mode().expect("could not enable raw mode");
         let (w, h) = terminal::size().expect("could not get terminal size");
+        let (w, h) = (w as usize, h as usize);
         queue!(stdout(), cursor::MoveTo(0, 0)).expect("could not move cursor");
         queue!(stdout(), cursor::Hide).expect("could not hide cursor");
         VTerm {
@@ -60,26 +65,29 @@ impl VTerm {
     }
 
     /// Immediately moves the cursor to a new position.
-    pub fn cursor_move(&mut self, x: u16, y: u16) -> io::Result<()> {
-        queue!(stdout(), cursor::MoveTo(x, y))
+    pub fn cursor_move(&mut self, x: usize, y: usize) -> io::Result<()> {
+        queue!(
+            stdout(),
+            cursor::MoveTo(dim_to_terminal(x), dim_to_terminal(y))
+        )
     }
 
     /// Gets the terminal size
-    pub fn size(&self) -> (u16, u16) {
+    pub fn size(&self) -> (usize, usize) {
         (self.width, self.height)
     }
 
     /// Queues a character into the vterminal.
-    pub fn queue_char(&mut self, ch: char, x: u16, y: u16, style: ContentStyle) {
+    pub fn queue_char(&mut self, ch: char, x: usize, y: usize, style: ContentStyle) {
         let i = self.index(x, y);
         self.vterminal[i] = Cell { ch, style };
     }
 
     /// Queues a string into the vterminal.
-    pub fn queue_text(&mut self, text: &str, x: u16, y: u16, style: ContentStyle) {
+    pub fn queue_text(&mut self, text: &str, x: usize, y: usize, style: ContentStyle) {
         for (i, c) in text.chars().enumerate() {
-            let x_offset = x as usize + i;
-            if x_offset > self.width as usize {
+            let x_offset = x + i;
+            if x_offset > self.width {
                 panic!("Write x outside of bounds! You dummy!");
             }
 
@@ -87,7 +95,7 @@ impl VTerm {
                 panic!("Write y outside of bounds! You dummy!");
             }
 
-            self.queue_char(c, x_offset as u16, y, style);
+            self.queue_char(c, x_offset, y, style);
         }
     }
 
@@ -99,14 +107,14 @@ impl VTerm {
 
     /// Flushes the vterminal to the screen.
     pub fn flush(&mut self) -> io::Result<()> {
-        for i in 0..self.width as usize * self.height as usize {
+        for i in 0..self.width * self.height {
             if self.vterminal[i] != self.vterminal_last[i] {
-                let x = (i % self.width as usize) as u16;
-                let y = (i / self.width as usize) as u16;
+                let x = i % self.width;
+                let y = i / self.width;
 
                 queue!(
                     stdout(),
-                    cursor::MoveTo(x, y),
+                    cursor::MoveTo(dim_to_terminal(x), dim_to_terminal(y)),
                     style::PrintStyledContent(self.vterminal[i].style.apply(self.vterminal[i].ch)),
                 )?;
             }
@@ -120,12 +128,12 @@ impl VTerm {
         Ok(())
     }
 
-    fn new_empty_vterminal(width: u16, height: u16) -> Vec<Cell> {
-        vec![Cell::new(); width as usize * height as usize]
+    fn new_empty_vterminal(width: usize, height: usize) -> Vec<Cell> {
+        vec![Cell::new(); width * height]
     }
 
-    fn index(&self, x: u16, y: u16) -> usize {
-        x as usize + y as usize * self.width as usize
+    fn index(&self, x: usize, y: usize) -> usize {
+        x + y * self.width
     }
 }
 
@@ -138,10 +146,10 @@ impl Drop for VTerm {
 
 pub struct Panel {
     vterm: Arc<Mutex<VTerm>>,
-    x: u16,
-    y: u16,
-    pub width: u16,
-    pub height: u16,
+    x: usize,
+    y: usize,
+    pub width: usize,
+    pub height: usize,
 }
 
 impl Panel {
@@ -155,17 +163,14 @@ impl Panel {
         }
     }
 
-    pub fn draw_text(&mut self, text: &str, x: u16, y: u16, style: ContentStyle) {
+    pub fn draw_text(&mut self, text: &str, x: usize, y: usize, style: ContentStyle) {
         if x > self.width || y > self.height {
             panic!("Out of panel bounds");
         }
 
-        if text.len() > self.width as usize {
+        if text.len() > self.width {
             self.vterm.lock().unwrap().queue_text(
-                text.chars()
-                    .take(self.width as usize)
-                    .collect::<String>()
-                    .as_str(),
+                text.chars().take(self.width).collect::<String>().as_str(),
                 self.x + x,
                 self.y + y,
                 style,
@@ -178,7 +183,7 @@ impl Panel {
         }
     }
 
-    pub fn update_size(&mut self, x: u16, y: u16, width: u16, height: u16) {
+    pub fn update_size(&mut self, x: usize, y: usize, width: usize, height: usize) {
         self.x = x;
         self.y = y;
         self.width = width;
@@ -197,4 +202,9 @@ impl Panel {
             }
         }
     }
+}
+
+/// Converts a dimension (size, coordinate, ...) from usize to terminal length variable (u16)
+fn dim_to_terminal(dim: usize) -> u16 {
+    min(dim, u16::MAX as usize) as u16
 }
