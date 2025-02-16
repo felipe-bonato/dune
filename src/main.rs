@@ -173,7 +173,7 @@ struct Dune {
     should_quit: bool,
 
     entries: Vec<file_info::FileInfo>,
-    entries_viewport: ScrollingWindow,
+    entries_scrolling_window: ScrollingWindow,
 
     curr_dir: file_info::FileInfo,
     delta_time: time::Duration,
@@ -208,7 +208,7 @@ impl Dune {
             delta_time: time::Duration::ZERO,
             state: StateMsg::Ok,
             mode: Mode::Explorer,
-            entries_viewport: ScrollingWindow::new(0, 0), // Hack cus we can't reference self.entries here yet.
+            entries_scrolling_window: ScrollingWindow::new(0, 0), // Hack cus we can't reference self.entries here yet.
             prompt: "".to_owned(),
             cursor: (0, 0),
             key_bindings,
@@ -291,7 +291,7 @@ impl Dune {
             // Draw debug on state
             let text = format!(
                 "view_window: {view_window:?}",
-                view_window = self.entries_viewport,
+                view_window = self.entries_scrolling_window,
             );
             let style = style::ContentStyle::new().on_white().black().bold();
             (text, style)
@@ -333,7 +333,7 @@ impl Dune {
             .draw_text(mode, w - 1 - mode.len(), 0, style.bold().black());
 
         // Draw entries
-        let visible_entries_range = self.entries_viewport.visible();
+        let visible_entries_range = self.entries_scrolling_window.visible();
         for (line_idx, entry_idx) in visible_entries_range.clone().enumerate() {
             if line_idx == 0 && entry_idx > 0 {
                 self.panel_file_name
@@ -341,7 +341,9 @@ impl Dune {
                 continue;
             }
 
-            if line_idx == self.panel_file_name.height - 1 && self.entries.len() > visible_entries_range.end {
+            if line_idx == self.panel_file_name.height - 1
+                && self.entries.len() > visible_entries_range.end
+            {
                 self.panel_file_name
                     .draw_text("...", 3, line_idx, style::ContentStyle::new());
                 continue;
@@ -364,7 +366,7 @@ impl Dune {
     fn render_entry(&mut self, entry_idx: usize, line_idx: usize) {
         let entry = &self.entries[entry_idx];
 
-        let style = if entry_idx == self.entries_viewport.selected() {
+        let style = if entry_idx == self.entries_scrolling_window.selected() {
             match self.mode {
                 Mode::Command => style::ContentStyle::new().bold().on_dark_green(),
                 Mode::Explorer => style::ContentStyle::new().bold().reverse(),
@@ -470,7 +472,7 @@ impl Dune {
         self.panel_state.update_size(0, h - 2, w, 1);
         self.panel_prompt.update_size(0, h - 1, w, 1);
 
-        self.entries_viewport
+        self.entries_scrolling_window
             .resize(self.panel_file_name.height, self.entries.len());
     }
 
@@ -482,7 +484,7 @@ impl Dune {
         for entry in fs::read_dir(&curr_dir)? {
             self.entries.push(entry?.try_into()?);
         }
-        self.entries_viewport
+        self.entries_scrolling_window
             .resize(self.panel_file_name.height, self.entries.len());
 
         self.curr_dir = curr_dir.try_into()?;
@@ -604,18 +606,19 @@ impl Dune {
                     match action {
                         ActionExplorer::ScrollUp => {
                             if !self.entries.is_empty() {
-                                self.entries_viewport.up();
+                                self.entries_scrolling_window.up();
                             }
                         }
 
                         ActionExplorer::ScrollDown => {
                             if !self.entries.is_empty() {
-                                self.entries_viewport.down();
+                                self.entries_scrolling_window.down();
                             }
                         }
 
                         ActionExplorer::DirEnter => {
-                            if let Some(entry) = self.entries.get(self.entries_viewport.selected())
+                            if let Some(entry) =
+                                self.entries.get(self.entries_scrolling_window.selected())
                             {
                                 if !entry.is_dir() {
                                     match open::that(entry.path()) {
@@ -635,7 +638,7 @@ impl Dune {
                                     ))
                                 } else {
                                     self.update_entries()?;
-                                    self.entries_viewport.first();
+                                    self.entries_scrolling_window.first();
                                     self.state = StateMsg::Ok;
                                 }
                             } else {
@@ -647,7 +650,7 @@ impl Dune {
                         ActionExplorer::DirLeave => {
                             cd("..")?;
                             self.update_entries()?;
-                            self.entries_viewport.first();
+                            self.entries_scrolling_window.first();
                             self.state = StateMsg::Ok;
                         }
 
