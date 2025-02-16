@@ -4,7 +4,7 @@ mod vec2;
 mod vterm;
 
 use std::{
-    cmp::min,
+    cmp::{self, min, Ordering},
     env, fs, io, ops, path, process, str,
     sync::{Arc, Mutex},
     time,
@@ -193,11 +193,13 @@ enum Mode {
     Command,
 }
 
+type Entries = Vec<file_info::FileInfo>;
+
 struct Dune {
     pub vterm: Arc<Mutex<VTerm>>,
     should_quit: bool,
 
-    entries: Vec<file_info::FileInfo>,
+    entries: Entries,
     entries_scrolling_window: ScrollingWindow,
 
     curr_dir: file_info::FileInfo,
@@ -514,6 +516,8 @@ impl Dune {
 
         self.curr_dir = curr_dir.try_into()?;
 
+        self.sort_entries_default();
+
         Ok(())
     }
 
@@ -629,21 +633,13 @@ impl Dune {
             Mode::Explorer => {
                 if let Some(action) = self.key_bindings.get_explorer(&evt) {
                     match action {
-                        ActionExplorer::NavLineUp => {
-                            self.entries_scrolling_window.up();
-                        }
+                        ActionExplorer::NavLineUp => self.entries_scrolling_window.up(),
 
-                        ActionExplorer::NavLineDown => {
-                            self.entries_scrolling_window.down();
-                        }
+                        ActionExplorer::NavLineDown => self.entries_scrolling_window.down(),
 
-                        ActionExplorer::NavHome => {
-                            self.entries_scrolling_window.first();
-                        }
+                        ActionExplorer::NavHome => self.entries_scrolling_window.first(),
 
-                        ActionExplorer::NavEnd => {
-                            self.entries_scrolling_window.last();
-                        }
+                        ActionExplorer::NavEnd => self.entries_scrolling_window.last(),
 
                         ActionExplorer::DirEnter => {
                             if let Some(entry) =
@@ -684,12 +680,43 @@ impl Dune {
                         }
 
                         ActionExplorer::EntriesUpdate => self.update_entries()?,
+
+                        ActionExplorer::EntriesSortByName => {
+                            self.entries.sort_by(|l, r| {
+                                if l.name() > r.name() {
+                                    cmp::Ordering::Greater
+                                } else {
+                                    cmp::Ordering::Less
+                                }
+                            });
+                        }
                     }
                 }
             }
         }
 
         Ok(())
+    }
+
+    /// Sorts in place the entries
+    fn sort_entries_default(&mut self) {
+        self.entries.sort_by(|l, r| {
+            let l_name = l.name();
+            let r_name = r.name();
+            if l_name.starts_with('.') == r_name.starts_with('.') {
+                if l.is_dir() == r.is_dir() {
+                    l_name.cmp(r_name)
+                } else if l.is_dir() {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
+            } else if l_name.starts_with('.') {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        });
     }
 
     fn unknown_event(&mut self, _evt: event::Event) {

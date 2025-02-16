@@ -11,6 +11,7 @@ pub enum ActionExplorer {
     DirEnter,
     DirLeave,
     EntriesUpdate,
+    EntriesSortByName,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -93,10 +94,10 @@ pub fn new() -> KeyBindings {
                 from_key_code(KeyCode::Backspace),
                 Action::Explorer(ActionExplorer::DirLeave),
             ),
-            (
+            /*(
                 from_key_code(KeyCode::F(5)),
                 Action::Explorer(ActionExplorer::EntriesUpdate),
-            ),
+            ),*/
             (
                 from_key_code(KeyCode::Home),
                 Action::Explorer(ActionExplorer::NavHome)
@@ -104,6 +105,10 @@ pub fn new() -> KeyBindings {
             (
                 from_key_code(KeyCode::End),
                 Action::Explorer(ActionExplorer::NavEnd)
+            ),
+            ( 
+                from_key_code(KeyCode::F(5)),
+                Action::Explorer(ActionExplorer::EntriesSortByName)
             )
         ]),
         command: HashMap::from([
