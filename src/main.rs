@@ -31,7 +31,7 @@ const DEBUG_MODE: bool = true;
 
 fn sat_add(value: usize, add: usize, saturation: usize) -> usize {
     // TODO: This break if saturates usize, but because we are using only for u16 it's fine.
-    if value + add >= saturation {
+    if value + add > saturation {
         saturation
     } else {
         value + add
@@ -158,10 +158,12 @@ impl ScrollingWindow {
     }
 
     fn scroll_down(&mut self) {
+        // TODO: Scroll down by one page
         todo!("implement")
     }
 
     fn scroll_up(&mut self) {
+        // TODO: Scroll up by one page
         todo!("implement")
     }
 
