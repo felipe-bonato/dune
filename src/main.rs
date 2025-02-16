@@ -4,8 +4,8 @@ mod vec2;
 mod vterm;
 
 use std::{
-    cmp::{self, min, Ordering},
-    env, fs, io, ops, path, process, str,
+    cmp::{min, Ordering},
+    env, fmt, fs, io, ops, path, process, str,
     sync::{Arc, Mutex},
     time,
 };
@@ -27,7 +27,7 @@ use vterm::{Panel, VTerm};
 // TODO: Improve text styling, currently it's all over the place
 //       it should come from a config file (maybe the same that the keybindings use?).
 
-const DEBUG_MODE: bool = true;
+const DEBUG_MODE: bool = false;
 
 fn sat_add(value: usize, add: usize, saturation: usize) -> usize {
     // TODO: This break if saturates usize, but because we are using only for u16 it's fine.
@@ -195,6 +195,25 @@ enum Mode {
 
 type Entries = Vec<file_info::FileInfo>;
 
+#[derive(Debug)]
+enum Sorting {
+    Default,
+    Name,
+    Date,
+    Type,
+}
+
+impl fmt::Display for Sorting {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        match self {
+            Sorting::Default => fmt.write_str("Default"),
+            Sorting::Date => fmt.write_str("Date"),
+            Sorting::Name => fmt.write_str("Name"),
+            Sorting::Type => fmt.write_str("Type"),
+        }
+    }
+}
+
 struct Dune {
     pub vterm: Arc<Mutex<VTerm>>,
     should_quit: bool,
@@ -202,6 +221,7 @@ struct Dune {
     entries: Entries,
     entries_scrolling_window: ScrollingWindow,
 
+    sorting: Sorting,
     curr_dir: file_info::FileInfo,
     delta_time: time::Duration,
     state: StateMsg,
@@ -232,6 +252,7 @@ impl Dune {
             curr_dir: starting_path
                 .try_into()
                 .expect("could not open current directory"),
+            sorting: Sorting::Default,
             delta_time: time::Duration::ZERO,
             state: StateMsg::Ok,
             mode: Mode::Explorer,
@@ -516,7 +537,7 @@ impl Dune {
 
         self.curr_dir = curr_dir.try_into()?;
 
-        self.sort_entries_default();
+        self.sort_entries();
 
         Ok(())
     }
@@ -681,14 +702,15 @@ impl Dune {
 
                         ActionExplorer::EntriesUpdate => self.update_entries()?,
 
-                        ActionExplorer::EntriesSortByName => {
-                            self.entries.sort_by(|l, r| {
-                                if l.name() > r.name() {
-                                    cmp::Ordering::Greater
-                                } else {
-                                    cmp::Ordering::Less
-                                }
-                            });
+                        ActionExplorer::EntriesSortToggle => {
+                            self.sorting = match self.sorting {
+                                Sorting::Default => Sorting::Date,
+                                Sorting::Date => Sorting::Name,
+                                Sorting::Name => Sorting::Type,
+                                Sorting::Type => Sorting::Default,
+                            };
+                            self.sort_entries();
+                            self.state = StateMsg::Info(format!("Sorting by {s}", s = self.sorting))
                         }
                     }
                 }
@@ -699,23 +721,34 @@ impl Dune {
     }
 
     /// Sorts in place the entries
-    fn sort_entries_default(&mut self) {
-        self.entries.sort_by(|l, r| {
-            let l_name = l.name();
-            let r_name = r.name();
-            if l_name.starts_with('.') == r_name.starts_with('.') {
+    fn sort_entries(&mut self) {
+        self.entries.sort_by(|l, r| match self.sorting {
+            Sorting::Default => {
+                if l.name().starts_with('.') == r.name().starts_with('.') {
+                    if l.is_dir() == r.is_dir() {
+                        l.name().cmp(r.name())
+                    } else if l.is_dir() {
+                        Ordering::Less
+                    } else {
+                        Ordering::Greater
+                    }
+                } else if l.name().starts_with('.') {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                }
+            }
+            Sorting::Type => {
                 if l.is_dir() == r.is_dir() {
-                    l_name.cmp(r_name)
+                    l.name().cmp(r.name())
                 } else if l.is_dir() {
                     Ordering::Less
                 } else {
                     Ordering::Greater
                 }
-            } else if l_name.starts_with('.') {
-                Ordering::Greater
-            } else {
-                Ordering::Less
             }
+            Sorting::Date => l.last_modified().cmp(&r.last_modified()),
+            Sorting::Name => l.name().cmp(r.name()),
         });
     }
 
