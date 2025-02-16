@@ -1,10 +1,11 @@
 mod file_info;
 mod key_bindings;
+mod vec2;
 mod vterm;
 
 use std::{
     cmp::min,
-    env, fs, io, path, process, str,
+    env, fs, io, ops, path, process, str,
     sync::{Arc, Mutex},
     time,
 };
@@ -19,11 +20,140 @@ use crossterm::{
 };
 
 use key_bindings::{ActionCommand, ActionExplorer, ActionGlobal, KeyBindings};
+use vec2::Vec2;
 use vterm::{Panel, VTerm};
 
 // TODO: Better separation into modules.
 // TODO: Improve text styling, currently it's all over the place
 //       it should come from a config file (maybe the same that the keybindings use?).
+
+const DEBUG_MODE: bool = false;
+
+/// Saturates as if u16
+fn sat_inc(value: usize, saturation: usize) -> usize {
+    if value >= saturation {
+        saturation
+    } else {
+        value + 1
+    }
+}
+
+/// Saturates as if u16
+fn sat_dec(value: usize, saturation: usize) -> usize {
+    if value <= saturation {
+        saturation
+    } else {
+        value - 1
+    }
+}
+
+#[derive(Debug)]
+struct ScrollingWindow {
+    viewport: Vec2, // Start and end of visible items.
+    entries_len: usize,
+    window_len: usize, // The height of the panel that the entries will be rendered to
+    selected_entry: usize, // Index of the selected entry in the self.entries slice.
+    selected_line: usize, // Index of the selected line in the viewport.
+}
+
+impl ScrollingWindow {
+    fn new(entries_len: usize, screen_len: usize) -> Self {
+        let mut s = Self {
+            entries_len,
+            window_len: 0,
+            selected_entry: 0,
+            selected_line: 0,
+            viewport: vec2::ZERO,
+        };
+        s.resize(screen_len, entries_len);
+        s
+    }
+
+    fn resize(&mut self, new_window_len: usize, new_entries_len: usize) {
+        self.window_len = new_window_len;
+        self.entries_len = new_entries_len;
+
+        self.viewport_reset();
+        self.first();
+    }
+
+    fn viewport_reset(&mut self) {
+        self.viewport = Vec2(0, min(self.window_len, self.entries_len));
+    }
+
+    /// Calculate the range in the entries array that can be seem in the screen
+    fn visible(&self) -> ops::Range<usize> {
+        if self.entries_len < self.window_len {
+            return 0..self.entries_len;
+        }
+
+        self.viewport.into()
+    }
+
+    fn selected(&self) -> usize {
+        self.selected_entry
+    }
+
+    fn down(&mut self) {
+        if self.selected_entry < self.entries_len - 1 {
+            self.selected_entry += 1;
+            if self.entry_overflow(
+                sat_inc(self.selected_entry, self.entries_len - 1), // We decrement one because we show "..." when there is overflow
+            ) {
+                // If overflow just move the viewport up, keep the selection.
+                // By moving the entries and not the selection we move the selected entry on screen.
+                self.viewport = self.viewport + vec2::ONE;
+            } else {
+                self.selected_line += 1;
+            }
+        }
+    }
+
+    fn up(&mut self) {
+        if self.selected_entry > 0 {
+            self.selected_entry -= 1;
+            // If overflow just move the viewport up, keep the selection.
+            // By moving the entries and not the selection we move the selected entry on screen.
+            if self.entry_underflow(
+                sat_dec(self.selected_entry, 0), // We increment one because we show "..." when there is overflow
+            ) {
+                self.viewport = self.viewport - vec2::ONE;
+            } else {
+                self.selected_line = self.selected_line.saturating_sub(1);
+            }
+        }
+    }
+
+    fn first(&mut self) {
+        self.selected_entry = 0;
+        self.selected_line = 0;
+        self.viewport_reset();
+    }
+
+    fn last(&mut self) {
+        todo!("implement")
+    }
+
+    fn scroll_down(&mut self) {
+        todo!("implement")
+    }
+
+    fn scroll_up(&mut self) {
+        todo!("implement")
+    }
+
+    /// Checks if the entry at index `i` can be drawn on the window
+    fn entry_overflow(&self, i: usize) -> bool {
+        i > 0 // Is there anything?
+            && self.entries_len > self.window_len // Does the entries not fit the window?
+            && i >= self.viewport.1 // Is it outside viewport?
+    }
+
+    fn entry_underflow(&self, i: usize) -> bool {
+        self.entries_len > self.window_len // Does the entries not fit the window?
+            && i < self.viewport.0 // Is it outside viewport?
+    }
+}
 
 enum StateMsg {
     Ok,
@@ -41,13 +171,12 @@ enum Mode {
 struct Dune {
     pub vterm: Arc<Mutex<VTerm>>,
     should_quit: bool,
-    updated_entries: bool,
+
     entries: Vec<file_info::FileInfo>,
+    entries_viewport: ScrollingWindow,
+
     curr_dir: file_info::FileInfo,
-    view_window: (usize, usize), // Start and end of entries being presented on screen
     delta_time: time::Duration,
-    selected_line: usize,
-    selected_entry: usize,
     state: StateMsg,
     mode: Mode,
     prompt: String,
@@ -72,17 +201,14 @@ impl Dune {
         Self {
             vterm: vterm.clone(),
             should_quit: false,
-            updated_entries: false,
             entries: Vec::new(),
             curr_dir: starting_path
                 .try_into()
                 .expect("could not open current directory"),
-            view_window: (0, 0),
             delta_time: time::Duration::ZERO,
             state: StateMsg::Ok,
-            selected_line: 0,
-            selected_entry: 0,
             mode: Mode::Explorer,
+            entries_viewport: ScrollingWindow::new(0, 0), // Hack cus we can't reference self.entries here yet.
             prompt: "".to_owned(),
             cursor: (0, 0),
             key_bindings,
@@ -159,11 +285,31 @@ impl Dune {
             }
         }
 
-        if self.updated_entries {
-            self.selected_line = 0;
-            self.selected_entry = 0;
-            self.updated_entries = false;
-        }
+        // Draw state
+
+        let (text, style) = if DEBUG_MODE {
+            // Draw debug on state
+            let text = format!(
+                "view_window: {view_window:?}",
+                view_window = self.entries_viewport,
+            );
+            let style = style::ContentStyle::new().on_white().black().bold();
+            (text, style)
+        } else {
+            match &self.state {
+                StateMsg::Error(msg) => (
+                    format!("ERROR: {msg}."),
+                    style::ContentStyle::new().on_dark_red().white().bold(),
+                ),
+                StateMsg::Ok => ("".to_owned(), style::ContentStyle::new().on_white().black()),
+                StateMsg::Info(msg) => (
+                    msg.to_owned(),
+                    style::ContentStyle::new().on_white().black().bold(),
+                ),
+            }
+        };
+        self.panel_state.fill(' ', style);
+        self.panel_state.draw_text(&text, 0, 0, style);
 
         // Draw header
         let style = style::ContentStyle::new().on_grey();
@@ -187,110 +333,22 @@ impl Dune {
             .draw_text(mode, w - 1 - mode.len(), 0, style.bold().black());
 
         // Draw entries
-        let start_window = self.view_window.0; // TODO: not scroll if everything can fit on the screen.
-        let end_window = min(self.view_window.1, self.entries.len());
-        for (i, entry) in self.entries[start_window..end_window].iter().enumerate() {
-            // let i = i as u16;
-            // let entry_idx = i + self.view_window.0;
-
-            // Keeps going
-            if i == self.panel_file_name.height - 1 && self.entries.len() > self.view_window.1 {
+        let visible_entries_range = self.entries_viewport.visible();
+        for (line_idx, entry_idx) in visible_entries_range.clone().enumerate() {
+            if line_idx == 0 && entry_idx > 0 {
                 self.panel_file_name
-                    .draw_text("   ...   ", 0, i, style::ContentStyle::new());
+                    .draw_text("...", 3, line_idx, style::ContentStyle::new());
                 continue;
             }
 
-            if i == 0 && self.view_window.0 > 0 {
+            if line_idx == self.panel_file_name.height - 1 && self.entries.len() > visible_entries_range.end {
                 self.panel_file_name
-                    .draw_text("   ...   ", 0, i, style::ContentStyle::new());
+                    .draw_text("...", 3, line_idx, style::ContentStyle::new());
                 continue;
             }
 
-            let style = if i == self.selected_line {
-                match self.mode {
-                    Mode::Command => style::ContentStyle::new().bold().on_dark_green(),
-                    Mode::Explorer => style::ContentStyle::new().bold().reverse(),
-                }
-            } else {
-                style::ContentStyle::new().bold()
-            };
-
-            let mode = entry.mode();
-
-            let style = if entry.is_dir() {
-                style.cyan()
-            } else if mode & 0o001 == 1 {
-                // Is executable
-                style.green()
-            } else if entry.is_read_only() {
-                style.grey()
-            } else {
-                style
-            };
-
-            let style = if entry.name().starts_with('.') {
-                // Unix hidden
-                style.dim()
-            } else {
-                style
-            };
-
-            let mut name = entry.name().to_string();
-            if name.len() > self.panel_file_name.width {
-                // TODO: Maybe do this with `format!`?
-                name.truncate(self.panel_file_name.width.saturating_sub(3));
-                name.push_str("...");
-            }
-            self.panel_file_name.draw_text(&name, 0, i, style);
-
-            self.panel_file_last_modified.draw_text(
-                entry
-                    .last_modified()
-                    .format("%e %b %y")
-                    .to_string()
-                    .as_str(),
-                0,
-                i,
-                style::ContentStyle::new().dim(),
-            );
-
-            self.panel_file_size.draw_text(
-                &entry.pretty_size(),
-                0,
-                i,
-                style::ContentStyle::new().dim(),
-            );
-
-            let mut permissions = String::with_capacity(12); // d rwxrwxrwx
-            permissions.push(if entry.is_dir() { 'd' } else { '-' });
-            permissions.push(' ');
-            for i in 0..3 {
-                permissions.push(if mode >> i & 0o1 > 0 { 'r' } else { '-' });
-                permissions.push(if mode >> i & 0o2 > 0 { 'w' } else { '-' });
-                permissions.push(if mode >> i & 0o4 > 0 { 'x' } else { '-' });
-            }
-            self.panel_file_permissions.draw_text(
-                permissions.as_str(),
-                0,
-                i,
-                style::ContentStyle::new().dim(),
-            );
+            self.render_entry(entry_idx, line_idx);
         }
-
-        // Draw state
-        let (text, style) = match &self.state {
-            StateMsg::Error(msg) => (
-                format!("ERROR: {msg}."),
-                style::ContentStyle::new().on_dark_red().white().bold(),
-            ),
-            StateMsg::Ok => ("".to_owned(), style::ContentStyle::new().on_white().black()),
-            StateMsg::Info(msg) => (
-                msg.to_owned(),
-                style::ContentStyle::new().on_white().black().bold(),
-            ),
-        };
-        self.panel_state.fill(' ', style);
-        self.panel_state.draw_text(&text, 0, 0, style);
 
         self.render_terminal()?;
 
@@ -303,12 +361,78 @@ impl Dune {
         Ok(())
     }
 
-    fn view_window_overflow(&self, i: usize) -> bool {
-        i >= self.view_window.1 - 1 && i <= self.entries.len()
-    }
+    fn render_entry(&mut self, entry_idx: usize, line_idx: usize) {
+        let entry = &self.entries[entry_idx];
 
-    fn view_window_underflow(&self, i: usize) -> bool {
-        self.view_window.0 > 0 && i == self.view_window.0
+        let style = if entry_idx == self.entries_viewport.selected() {
+            match self.mode {
+                Mode::Command => style::ContentStyle::new().bold().on_dark_green(),
+                Mode::Explorer => style::ContentStyle::new().bold().reverse(),
+            }
+        } else {
+            style::ContentStyle::new().bold()
+        };
+
+        let mode = entry.mode();
+
+        let style = if entry.is_dir() {
+            style.cyan()
+        } else if mode & 0o001 == 1 {
+            // Is executable
+            style.green()
+        } else if entry.is_read_only() {
+            style.grey()
+        } else {
+            style
+        };
+
+        let style = if entry.name().starts_with('.') {
+            // Unix hidden
+            style.dim()
+        } else {
+            style
+        };
+
+        let mut name = entry.name().to_string();
+        if name.len() > self.panel_file_name.width {
+            // TODO: Maybe do this with `format!`?
+            name.truncate(self.panel_file_name.width.saturating_sub(3));
+            name.push_str("...");
+        }
+        self.panel_file_name.draw_text(&name, 0, line_idx, style);
+
+        self.panel_file_last_modified.draw_text(
+            entry
+                .last_modified()
+                .format("%e %b %y")
+                .to_string()
+                .as_str(),
+            0,
+            line_idx,
+            style::ContentStyle::new().dim(),
+        );
+
+        self.panel_file_size.draw_text(
+            &entry.pretty_size(),
+            0,
+            line_idx,
+            style::ContentStyle::new().dim(),
+        );
+
+        let mut permissions = String::with_capacity(12); // d rwxrwxrwx
+        permissions.push(if entry.is_dir() { 'd' } else { '-' });
+        permissions.push(' ');
+        for i in 0..3 {
+            permissions.push(if mode >> i & 0o1 > 0 { 'r' } else { '-' });
+            permissions.push(if mode >> i & 0o2 > 0 { 'w' } else { '-' });
+            permissions.push(if mode >> i & 0o4 > 0 { 'x' } else { '-' });
+        }
+        self.panel_file_permissions.draw_text(
+            permissions.as_str(),
+            0,
+            line_idx,
+            style::ContentStyle::new().dim(),
+        );
     }
 
     fn update_panels_size(&mut self) {
@@ -346,7 +470,8 @@ impl Dune {
         self.panel_state.update_size(0, h - 2, w, 1);
         self.panel_prompt.update_size(0, h - 1, w, 1);
 
-        self.resize_view_window();
+        self.entries_viewport
+            .resize(self.panel_file_name.height, self.entries.len());
     }
 
     fn update_entries(&mut self) -> io::Result<()> {
@@ -357,18 +482,12 @@ impl Dune {
         for entry in fs::read_dir(&curr_dir)? {
             self.entries.push(entry?.try_into()?);
         }
-        self.resize_view_window();
+        self.entries_viewport
+            .resize(self.panel_file_name.height, self.entries.len());
 
         self.curr_dir = curr_dir.try_into()?;
 
-        self.updated_entries = true;
-
         Ok(())
-    }
-
-    fn resize_view_window(&mut self) {
-        self.view_window = (0, min(self.entries.len(), self.panel_file_name.height));
-        // TODO: Move this out of here
     }
 
     fn render_terminal(&mut self) -> io::Result<()> {
@@ -484,36 +603,20 @@ impl Dune {
                 if let Some(action) = self.key_bindings.get_explorer(&evt) {
                     match action {
                         ActionExplorer::ScrollUp => {
-                            if self.selected_entry > 0 {
-                                self.selected_entry -= 1;
-                                if self.view_window_underflow(self.selected_entry.saturating_sub(1))
-                                {
-                                    self.view_window.0 = self.view_window.0.saturating_sub(1);
-                                    self.view_window.1 = self.view_window.1.saturating_sub(1);
-                                } else {
-                                    self.selected_line = self.selected_line.saturating_sub(1);
-                                }
+                            if !self.entries.is_empty() {
+                                self.entries_viewport.up();
                             }
                         }
 
                         ActionExplorer::ScrollDown => {
-                            if !self.entries.is_empty()
-                                && self.selected_entry < self.entries.len() - 1
-                            {
-                                self.selected_entry += 1;
-                                if self.entries.len() > self.panel_file_name.height // Don't need to scroll if everything fits.
-                                            && self.view_window_overflow(self.selected_entry + 1)
-                                {
-                                    self.view_window.0 += 1;
-                                    self.view_window.1 += 1;
-                                } else if self.selected_entry < self.entries.len() {
-                                    self.selected_line += 1;
-                                }
+                            if !self.entries.is_empty() {
+                                self.entries_viewport.down();
                             }
                         }
 
                         ActionExplorer::DirEnter => {
-                            if let Some(entry) = self.entries.get(self.selected_entry) {
+                            if let Some(entry) = self.entries.get(self.entries_viewport.selected())
+                            {
                                 if !entry.is_dir() {
                                     match open::that(entry.path()) {
                                         Ok(()) => self.state = StateMsg::Ok,
@@ -532,6 +635,7 @@ impl Dune {
                                     ))
                                 } else {
                                     self.update_entries()?;
+                                    self.entries_viewport.first();
                                     self.state = StateMsg::Ok;
                                 }
                             } else {
@@ -543,6 +647,7 @@ impl Dune {
                         ActionExplorer::DirLeave => {
                             cd("..")?;
                             self.update_entries()?;
+                            self.entries_viewport.first();
                             self.state = StateMsg::Ok;
                         }
 

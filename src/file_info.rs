@@ -2,6 +2,7 @@ use std::{fs, io, os::unix::fs::PermissionsExt, path, time};
 
 pub static INVALID_FILE: &str = "<INVALID>";
 
+#[derive(Clone, Debug)]
 pub struct FileInfo {
     name: String,
     path_abs: path::PathBuf,
@@ -46,7 +47,10 @@ impl FileInfo {
     /// Eg.: 10KiB, 1.0MiB
     pub fn pretty_size(&self) -> String {
         if self.size_kib > 1024 * 1024 * 1024 * 1024 * 1024 {
-            format!("{s:3} PiB", s = self.size_kib / 1024 * 1024 * 1024 * 1024 * 1024)
+            format!(
+                "{s:3} PiB",
+                s = self.size_kib / 1024 * 1024 * 1024 * 1024 * 1024
+            )
         } else if self.size_kib > 1024 * 1024 * 1024 * 1024 {
             format!("{s:3} TiB", s = self.size_kib / 1024 * 1024 * 1024 * 1024)
         } else if self.size_kib > 1024 * 1024 * 1024 {
