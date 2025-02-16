@@ -27,7 +27,23 @@ use vterm::{Panel, VTerm};
 // TODO: Improve text styling, currently it's all over the place
 //       it should come from a config file (maybe the same that the keybindings use?).
 
-const DEBUG_MODE: bool = false;
+const DEBUG_MODE: bool = true;
+
+fn sat_add(value: usize, add: usize, saturation: usize) -> usize {
+    // TODO: This break if saturates usize, but because we are using only for u16 it's fine.
+    if value + add >= saturation {
+        saturation
+    } else {
+        value + add
+    }
+}
+
+fn sat_sub(value: usize, sub: usize, saturation: usize) -> usize {
+    value
+        .checked_sub(sub)
+        .map(|v| if v < saturation { saturation } else { v })
+        .unwrap_or(saturation)
+}
 
 /// Saturates as if u16
 fn sat_inc(value: usize, saturation: usize) -> usize {
@@ -95,7 +111,7 @@ impl ScrollingWindow {
     }
 
     fn down(&mut self) {
-        if self.selected_entry < self.entries_len - 1 {
+        if self.selected_entry < self.entries_len - 1 && self.entries_len > 0 {
             self.selected_entry += 1;
             if self.entry_overflow(
                 sat_inc(self.selected_entry, self.entries_len - 1), // We decrement one because we show "..." when there is overflow
@@ -110,7 +126,7 @@ impl ScrollingWindow {
     }
 
     fn up(&mut self) {
-        if self.selected_entry > 0 {
+        if self.selected_entry > 0 && self.entries_len > 0 {
             self.selected_entry -= 1;
             // If overflow just move the viewport up, keep the selection.
             // By moving the entries and not the selection we move the selected entry on screen.
@@ -131,7 +147,14 @@ impl ScrollingWindow {
     }
 
     fn last(&mut self) {
-        todo!("implement")
+        let last_entry_idx = self.entries_len - 1;
+        self.selected_line = last_entry_idx;
+        self.selected_entry = last_entry_idx;
+
+        self.viewport = Vec2(
+            sat_sub(self.entries_len, self.window_len, 0),
+            self.entries_len,
+        );
     }
 
     fn scroll_down(&mut self) {
@@ -604,16 +627,20 @@ impl Dune {
             Mode::Explorer => {
                 if let Some(action) = self.key_bindings.get_explorer(&evt) {
                     match action {
-                        ActionExplorer::ScrollUp => {
-                            if !self.entries.is_empty() {
-                                self.entries_scrolling_window.up();
-                            }
+                        ActionExplorer::NavLineUp => {
+                            self.entries_scrolling_window.up();
                         }
 
-                        ActionExplorer::ScrollDown => {
-                            if !self.entries.is_empty() {
-                                self.entries_scrolling_window.down();
-                            }
+                        ActionExplorer::NavLineDown => {
+                            self.entries_scrolling_window.down();
+                        }
+
+                        ActionExplorer::NavHome => {
+                            self.entries_scrolling_window.first();
+                        }
+
+                        ActionExplorer::NavEnd => {
+                            self.entries_scrolling_window.last();
                         }
 
                         ActionExplorer::DirEnter => {

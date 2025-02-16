@@ -4,8 +4,10 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, Ke
 
 #[derive(Debug, Copy, Clone)]
 pub enum ActionExplorer {
-    ScrollUp,
-    ScrollDown,
+    NavLineUp,
+    NavLineDown,
+    NavHome,
+    NavEnd,
     DirEnter,
     DirLeave,
     EntriesUpdate,
@@ -77,11 +79,11 @@ pub fn new() -> KeyBindings {
         explorer: HashMap::from([
             (
                 from_key_code(KeyCode::Up),
-                Action::Explorer(ActionExplorer::ScrollUp),
+                Action::Explorer(ActionExplorer::NavLineUp),
             ),
             (
                 from_key_code(KeyCode::Down),
-                Action::Explorer(ActionExplorer::ScrollDown),
+                Action::Explorer(ActionExplorer::NavLineDown),
             ),
             (
                 from_key_code(KeyCode::Enter),
@@ -95,6 +97,14 @@ pub fn new() -> KeyBindings {
                 from_key_code(KeyCode::F(5)),
                 Action::Explorer(ActionExplorer::EntriesUpdate),
             ),
+            (
+                from_key_code(KeyCode::Home),
+                Action::Explorer(ActionExplorer::NavHome)
+            ),
+            (
+                from_key_code(KeyCode::End),
+                Action::Explorer(ActionExplorer::NavEnd)
+            )
         ]),
         command: HashMap::from([
             (
